@@ -19,6 +19,7 @@ mod kle;
 mod labels;
 mod logging;
 mod model;
+mod os_layout;
 mod paths;
 mod screen;
 mod search;

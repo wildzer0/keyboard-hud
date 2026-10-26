@@ -156,7 +156,7 @@ Click-through can only be turned on if the connected keyboard has the HUD_TOG ke
   - a tap dance key shows the tap action large and the hold (or double tap) action small; the tooltip lists them all;
   - with *Show combos* each combo is a label with its result between the keys to press together;
   - a key override shows while you use it: holding Shift, the ⌫ key shows ⌦ in color (with the override Shift+⌫ = Del).
-  - holding Shift (or with a Shift one-shot), the keys with a symbol show the one they type: `;` becomes `:`, `1` becomes `!`. The layout follows the language of the HUD: Italian keyboard for Italian, US otherwise.
+  - holding Shift (or with a Shift one-shot), the keys with a symbol show the one they type: `;` becomes `:`, `1` becomes `!`. The layout follows the keyboard layout of the operating system (the window you are typing in on Windows): Italian symbols for an Italian layout, US otherwise.
 - **Search**: besides keys it finds combos (`combo: J + K together`), tap dance actions (`Q (hold)`) and key overrides (`Shift + Bksp`).
 
 ## Linux: udev rule

@@ -28,7 +28,7 @@ sha2 = { version = "0.10", default-features = false }
 [target.'cfg(windows)'.dependencies]
 # cursor and monitor geometry (ui::cursor_on_screen, screen.rs), autostart registry entry (autostart.rs),
 # windows without the system shadow (ui/frameless.rs)
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # foreground application on X11, for per-application labels (foreground.rs)
