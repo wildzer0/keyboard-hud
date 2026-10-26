@@ -125,8 +125,41 @@ fn compact(key: &str) -> Option<Text> {
     }
 }
 
-/// US layout: character produced by Shift + basic key.
-fn shifted_us(kc: u8) -> Option<&'static str> {
+/// Character produced by Shift + basic key, on the layout matching the
+/// language (Italian keyboard for Italian, US otherwise). Keycodes are the
+/// US positions, as the host sees them.
+pub fn shifted(kc: u8) -> Option<&'static str> {
+    shifted_in(crate::i18n::current(), kc)
+}
+
+fn shifted_in(lang: crate::i18n::Lang, kc: u8) -> Option<&'static str> {
+    if lang == crate::i18n::Lang::It {
+        return Some(match kc {
+            0x1E => "!",
+            0x1F => "\"",
+            0x20 => "£",
+            0x21 => "$",
+            0x22 => "%",
+            0x23 => "&",
+            0x24 => "/",
+            0x25 => "(",
+            0x26 => ")",
+            0x27 => "=",
+            0x2D => "?",
+            0x2E => "^",
+            0x2F => "é",
+            0x30 => "*",
+            0x31 | 0x32 => "§",
+            0x33 => "ç",
+            0x34 => "°",
+            0x35 => "|",
+            0x36 => ";",
+            0x37 => ":",
+            0x38 => "_",
+            0x64 => ">",
+            _ => return None,
+        });
+    }
     Some(match kc {
         0x1E => "!",
         0x1F => "@",
@@ -311,8 +344,8 @@ pub fn legend(code: u16, ctx: &LegendContext) -> Legend {
             Legend { tap, hold: None, tooltip, kind }
         }
         Keycode::Mods { mods, kc } => {
-            if mods == Mods5(0x02) {
-                if let Some(ch) = shifted_us(kc) {
+            if mods == Mods5(0x02) || mods == Mods5(0x12) {
+                if let Some(ch) = shifted(kc) {
                     return normal(Text::plain(ch), format!("{ch} ({})", qmk_name(code)));
                 }
             }
@@ -472,6 +505,17 @@ mod tests {
         // empty or unknown: by number
         assert_eq!((m(3).tap.text.as_str(), m(3).hold), ("M3", None));
         assert_eq!(m(9).tap.text, "M9");
+    }
+
+    #[test]
+    fn shift_follows_the_layout() {
+        use crate::i18n::Lang;
+        // ; and ' keys: US layout vs Italian
+        assert_eq!(shifted_in(Lang::En, 0x33), Some(":"));
+        assert_eq!(shifted_in(Lang::It, 0x37), Some(":"));
+        assert_eq!(shifted_in(Lang::En, 0x1F), Some("@"));
+        assert_eq!(shifted_in(Lang::It, 0x1F), Some("\""));
+        assert_eq!(shifted_in(Lang::En, 0x04), None); // letters are not symbols
     }
 
     #[test]

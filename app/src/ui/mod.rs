@@ -840,6 +840,16 @@ impl HudApp {
         self.split_seen && self.state.is_some_and(|s| !s.flag(flags::SLAVE_OK))
     }
 
+    /// No keyboard to follow (not found, no permission, error): the HUD stays
+    /// out of the way and the mini indicator and the tray icon say so.
+    fn keyboard_absent(&self) -> bool {
+        matches!(self.mode, Mode::Live { mock: false, .. })
+            && matches!(
+                self.status,
+                None | Some(Status::Searching | Status::PermissionDenied(_) | Status::Error(_))
+            )
+    }
+
     /// Short reason for the missing live state, for the mini indicator.
     fn connection_problem(&self) -> Option<&'static str> {
         let msg = match &self.status {
@@ -1025,7 +1035,7 @@ impl HudApp {
 
     /// Is the HUD on screen (not hidden, not faded out by heads-up)?
     fn on_screen(&self) -> bool {
-        self.visible && (!self.headsup_on || self.pinned || self.headsup.level() > 0.01)
+        self.visible && (!(self.headsup_on || self.keyboard_absent()) || self.pinned || self.headsup.level() > 0.01)
     }
 
     fn handle_tray(&mut self, ctx: &egui::Context) {
@@ -1038,7 +1048,7 @@ impl HudApp {
                         self.set_visible(ctx, false);
                     } else {
                         // with heads-up it would fade out at once: keep it on screen
-                        self.pinned = self.headsup_on;
+                        self.pinned = self.headsup_on || self.keyboard_absent();
                         self.set_visible(ctx, true);
                     }
                 }
@@ -1074,13 +1084,14 @@ impl HudApp {
             }
         }
         let (visible, paused) = (self.on_screen(), self.worker().is_some_and(Worker::is_paused));
+        let alert = self.keyboard_absent().then(|| self.connection_problem()).flatten();
         let autostart = matches!(self.autostart, Ok(autostart::State::On));
         let update = match self.updater.state() {
             crate::update::State::Available(r) => Some(r.version),
             _ => None,
         };
         if let Some(t) = &mut self.tray {
-            t.sync(visible, paused, autostart, update.as_deref());
+            t.sync(visible, paused, autostart, update.as_deref(), alert);
         }
     }
 
@@ -2582,6 +2593,15 @@ impl eframe::App for HudApp {
                     || (self.headsup.level() > 0.5 && response.hovered());
                 self.headsup.update(wanted, force, hu, now)
             }
+            // no keyboard: the HUD fades out, unless asked for (tray, menu, search)
+            _ if self.keyboard_absent() => {
+                let force = self.pinned
+                    || self.search.open
+                    || self.menu.is_some()
+                    || ctx.any_popup_open()
+                    || self.drag.is_some();
+                self.headsup.update(false, force, hu, now)
+            }
             _ => 1.0,
         };
         // a game, a video or a slide show in full screen: out of the way
@@ -2701,7 +2721,13 @@ impl eframe::App for HudApp {
                 // key overrides firing with the modifiers held now
                 let mods = live_state.map_or(0, |s| s.mods | s.oneshot_mods | s.oneshot_locked_mods);
                 let key_override = |code: u16| {
-                    let o = l.dynamic.override_for(code, mods, layer)?;
+                    let Some(o) = l.dynamic.override_for(code, mods, layer) else {
+                        // Shift held: the symbol the key types with Shift
+                        let shift = mods & 0x22 != 0 && mods & !0x22 == 0;
+                        let kc = u8::try_from(code).ok().filter(|_| code < 0x100)?;
+                        let ch = crate::vial::legend::shifted(kc).filter(|_| shift)?;
+                        return Some((0x0200 | code, format!("Shift: {ch}")));
+                    };
                     let trigger = crate::vial::legend::legend(o.trigger, &legends).tap.text;
                     Some((o.replacement, format!("Key override: {}+{trigger}", Mods5(o.mods5()).display())))
                 };
