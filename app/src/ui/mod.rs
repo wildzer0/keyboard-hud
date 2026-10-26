@@ -844,10 +844,7 @@ impl HudApp {
     /// out of the way and the mini indicator and the tray icon say so.
     fn keyboard_absent(&self) -> bool {
         matches!(self.mode, Mode::Live { mock: false, .. })
-            && matches!(
-                self.status,
-                None | Some(Status::Searching | Status::PermissionDenied(_) | Status::Error(_))
-            )
+            && matches!(self.status, None | Some(Status::Searching | Status::PermissionDenied(_) | Status::Error(_)))
     }
 
     /// Short reason for the missing live state, for the mini indicator.

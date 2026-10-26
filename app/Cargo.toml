@@ -1,6 +1,6 @@
 [package]
 name = "keyboard-hud"
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 license = "GPL-2.0-or-later"
 description = "Portable on-screen HUD for QMK keyboards with Vial"

@@ -127,7 +127,21 @@ impl Tray {
             .with_menu_on_left_click(false)
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Tray { _icon: tray, show, pause, autostart, backups, stats, settings, update, quit, shown: None, icon, icon_alert, lang })
+        Ok(Tray {
+            _icon: tray,
+            show,
+            pause,
+            autostart,
+            backups,
+            stats,
+            settings,
+            update,
+            quit,
+            shown: None,
+            icon,
+            icon_alert,
+            lang,
+        })
     }
 
     /// Actions requested since the last call.
