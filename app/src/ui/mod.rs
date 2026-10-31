@@ -25,7 +25,7 @@ use crate::config::{
 };
 use crate::config_edit::{self, Edit};
 use crate::headsup::{self, HeadsUp};
-use crate::hid::protocol::{caps, flags, HudInfo, HudState, OsKind};
+use crate::hid::protocol::{caps, flags, HudInfo, HudState, Matrix, OsKind};
 use crate::hid::worker::{Event, KeyWrite, PauseReason, Status, Worker, WriteError};
 use crate::i18n::{tr, Lang, Msg};
 use crate::kle::{KeyRole, KleKey};
@@ -309,20 +309,19 @@ fn write_ppm(path: &std::path::Path, image: &egui::ColorImage) -> std::io::Resul
 /// Press highlight per matrix position.
 #[derive(Default)]
 struct PressFade {
-    matrix: [u8; 8],
-    released: [[Option<Instant>; 8]; 8],
+    matrix: Matrix,
+    /// When each key that was pressed let go.
+    released: HashMap<(u8, u8), Instant>,
 }
 
 impl PressFade {
-    fn update(&mut self, matrix: &[u8; 8], now: Instant) {
-        for ((old, new), times) in self.matrix.iter().zip(matrix).zip(self.released.iter_mut()) {
-            let released = old & !new;
-            for (c, t) in times.iter_mut().enumerate() {
-                if released & (1 << c) != 0 {
-                    *t = Some(now);
-                }
+    fn update(&mut self, matrix: &Matrix, now: Instant) {
+        for (r, c) in self.matrix.pressed() {
+            if !matrix.is_pressed(r, c) {
+                self.released.insert((r, c), now);
             }
         }
+        self.released.retain(|_, t| now.duration_since(*t) < FADE);
         self.matrix = *matrix;
     }
 
@@ -331,35 +330,22 @@ impl PressFade {
     }
 
     /// Keys pressed in `matrix` that were up in the previous state.
-    fn new_presses(&self, matrix: &[u8; 8]) -> Vec<(u8, u8)> {
-        let mut out = Vec::new();
-        for (r, (old, new)) in self.matrix.iter().zip(matrix).enumerate() {
-            let pressed = new & !old;
-            for c in 0..8u8 {
-                if pressed & (1 << c) != 0 {
-                    out.push((r as u8, c));
-                }
-            }
-        }
-        out
+    fn new_presses(&self, matrix: &Matrix) -> Vec<(u8, u8)> {
+        matrix.pressed().filter(|&(r, c)| !self.matrix.is_pressed(r, c)).collect()
     }
 
     fn level(&self, row: u8, col: u8, now: Instant) -> f32 {
-        let (r, c) = (row as usize, col as usize);
-        if r >= 8 || c >= 8 {
-            return 0.0;
-        }
-        if self.matrix[r] & (1 << c) != 0 {
+        if self.matrix.is_pressed(row, col) {
             return 1.0;
         }
-        match self.released[r][c] {
+        match self.released.get(&(row, col)).copied() {
             Some(t) => 1.0 - (now.duration_since(t).as_secs_f32() / FADE.as_secs_f32()).min(1.0),
             None => 0.0,
         }
     }
 
     fn animating(&self, now: Instant) -> bool {
-        self.released.iter().flatten().flatten().any(|t| now.duration_since(*t) < FADE)
+        self.released.values().any(|t| now.duration_since(*t) < FADE)
     }
 }
 
@@ -2936,6 +2922,23 @@ impl eframe::App for HudApp {
 mod tests {
     use super::*;
 
+    /// Keys beyond the 8th column press and fade out like the others.
+    #[test]
+    fn press_fade_on_a_wide_matrix() {
+        let mut fade = PressFade::default();
+        let t0 = Instant::now();
+        let mut m = Matrix::new(2);
+        m.set(2, 11);
+        assert_eq!(fade.new_presses(&m), vec![(2, 11)]);
+        fade.update(&m, t0);
+        assert_eq!(fade.level(2, 11, t0), 1.0);
+        assert!(fade.new_presses(&m).is_empty());
+        fade.update(&Matrix::new(2), t0);
+        assert!(fade.level(2, 11, t0 + FADE / 2) > 0.0 && fade.level(2, 11, t0 + FADE / 2) < 1.0);
+        assert_eq!(fade.level(2, 11, t0 + FADE), 0.0);
+        assert!(fade.animating(t0) && !fade.animating(t0 + FADE));
+    }
+
     /// Menu choices written into the config file read back the same.
     #[test]
     fn prefs_round_trip_through_the_config() {
@@ -2966,11 +2969,11 @@ mod tests {
     fn press_fade() {
         let t0 = Instant::now();
         let mut f = PressFade::default();
-        let mut m = [0u8; 8];
-        m[1] = 0b100;
+        let mut m = Matrix::default();
+        m.set(1, 2);
         f.update(&m, t0);
         assert_eq!(f.level(1, 2, t0), 1.0);
-        f.update(&[0; 8], t0);
+        f.update(&Matrix::default(), t0);
         assert!((f.level(1, 2, t0 + Duration::from_millis(100)) - 0.5).abs() < 0.01);
         assert_eq!(f.level(1, 2, t0 + Duration::from_millis(250)), 0.0);
         assert!(f.animating(t0 + Duration::from_millis(50)));

@@ -162,9 +162,16 @@ impl Device {
         Ok(p::decode_info(&r, seq)?)
     }
 
-    pub fn state(&mut self) -> Result<HudState, DeviceError> {
+    /// Layers, modifiers and flags; with protocol 2 the pressed keys of the
+    /// whole matrix come from a second request.
+    pub fn state(&mut self, info: &HudInfo) -> Result<HudState, DeviceError> {
         let (r, seq) = self.hud(HudCommand::State, &[])?;
-        Ok(p::decode_state(&r, seq)?)
+        let mut state = p::decode_state(&r, seq)?;
+        if info.has_matrix_command() {
+            let (r, seq) = self.hud(HudCommand::Matrix, &[])?;
+            state.matrix = p::decode_matrix(&r, seq, info.rows, info.row_bytes)?;
+        }
+        Ok(state)
     }
 
     /// Effective keymap (Colemak remap already applied by the firmware).

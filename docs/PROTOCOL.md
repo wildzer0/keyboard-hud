@@ -1,5 +1,7 @@
 # HUD protocol v1 (Raw HID)
 
+> Matrices wider than 8 columns use **protocol 2** (`GET_INFO` byte 14 = bytes per row, new command `0x04 GET_MATRIX`): see [hud-protocol-v2.md](hud-protocol-v2.md). The app speaks both.
+
 Transport: the VIA/Vial Raw HID interface (usage page `0xFF60`, usage `0x61`), 32-byte reports.
 On every platform `hidapi` writes 33 bytes, with report ID `0x00` in front.
 Request/response model: the firmware never sends reports on its own.

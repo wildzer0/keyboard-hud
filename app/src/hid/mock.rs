@@ -125,6 +125,8 @@ pub struct MockKeyboard {
     frozen_ms: Option<u64>,
     /// Grows at every key written, like the firmware's `keymap_version`.
     keymap_version: u8,
+    /// Speaks protocol 2 (`GET_MATRIX`) instead of 1.
+    protocol_2: bool,
 }
 
 /// Macro buffer of the simulated keyboard: "hi" + Enter, then three empty macros.
@@ -167,6 +169,7 @@ impl MockKeyboard {
             pending: VecDeque::new(),
             frozen_ms: None,
             keymap_version: 0,
+            protocol_2: false,
         }
     }
 
@@ -286,13 +289,14 @@ impl MockKeyboard {
         r[2] = p::STATUS_OK;
         match r[1] {
             0x01 => {
-                r[4] = p::HUD_PROTOCOL_VERSION;
+                r[4] = if self.protocol_2 { 2 } else { p::HUD_PROTOCOL_VERSION };
                 r[5] = self.keymap.rows();
                 r[6] = self.keymap.cols();
                 r[7] = self.keymap.layers();
                 r[8..10].copy_from_slice(&0x3Fu16.to_le_bytes());
                 r[10..12].copy_from_slice(&0x7E12u16.to_le_bytes());
                 r[12] = p::MAX_KEYMAP_CHUNK;
+                r[14] = 1;
             }
             0x02 => {
                 let f = frame_at(self.now_ms());
@@ -307,6 +311,7 @@ impl MockKeyboard {
                 r[26] = 1;
                 r[28] = self.keymap_version;
             }
+            0x04 if self.protocol_2 => r[4..12].copy_from_slice(&frame_at(self.now_ms()).pressed),
             0x03 => {
                 let (layer, offset, count) = (args[0], u16::from_le_bytes([args[1], args[2]]), args[3]);
                 r[4..8].copy_from_slice(&args);
@@ -359,6 +364,26 @@ mod tests {
         Device::new(Box::new(MockKeyboard::frozen(ms)), Duration::from_millis(50))
     }
 
+    fn state_of(d: &mut Device) -> crate::hid::protocol::HudState {
+        let info = d.info().unwrap();
+        d.state(&info).unwrap()
+    }
+
+    /// Protocol 2: the pressed keys come from `GET_MATRIX`, GET_STATE has none that count.
+    #[test]
+    fn protocol_2_reads_the_matrix_separately() {
+        let m = MockKeyboard { protocol_2: true, ..MockKeyboard::frozen(7000) };
+        let mut d = Device::new(Box::new(m), Duration::from_millis(50));
+        let info = d.info().unwrap();
+        assert!(info.has_matrix_command() && info.row_bytes == 1);
+        let s = d.state(&info).unwrap();
+        assert!(s.is_pressed(3, 4) && s.is_pressed(7, 4));
+        // the mock does not know GET_MATRIX as protocol 1
+        assert!(
+            MockKeyboard::frozen(0).answer(&p::hud_request(p::HudCommand::Matrix, 1, &[])).unwrap()[2] != p::STATUS_OK
+        );
+    }
+
     #[test]
     fn full_session_over_the_protocol() {
         let mut d = device_at(0);
@@ -377,15 +402,15 @@ mod tests {
 
     #[test]
     fn scripted_states() {
-        assert_eq!(device_at(3000).state().unwrap().layer_state, 1 << 1);
-        let sys = device_at(7000).state().unwrap();
+        assert_eq!(state_of(&mut device_at(3000)).layer_state, 1 << 1);
+        let sys = state_of(&mut device_at(7000));
         assert_eq!(sys.layer_state, 0b1110);
         assert!(sys.is_pressed(3, 4) && sys.is_pressed(7, 4));
-        let osl = device_at(8500).state().unwrap();
+        let osl = state_of(&mut device_at(8500));
         assert_eq!(osl.oneshot_layer, Some(5));
-        assert_eq!(device_at(10_000).state().unwrap().mods, 0x01);
-        assert!(device_at(14_000).state().unwrap().flag(flags::USER));
-        assert_eq!(device_at(PERIOD_MS + 3000).state().unwrap().layer_state, 1 << 1);
+        assert_eq!(state_of(&mut device_at(10_000)).mods, 0x01);
+        assert!(state_of(&mut device_at(14_000)).flag(flags::USER));
+        assert_eq!(state_of(&mut device_at(PERIOD_MS + 3000)).layer_state, 1 << 1);
     }
 
     #[test]
@@ -419,12 +444,12 @@ mod tests {
     fn keys_written_over_the_protocol() {
         let mut d = device_at(0);
         let info = d.info().unwrap();
-        let before = d.state().unwrap().keymap_version;
+        let before = state_of(&mut d).keymap_version;
         assert_eq!(d.keycode(0, 1, 1).unwrap(), d.keymap(&info).unwrap().get(0, 1, 1));
         d.set_keycode(0, 1, 1, 0x29).unwrap();
         assert_eq!(d.keycode(0, 1, 1).unwrap(), 0x29);
         assert_eq!(d.keymap(&info).unwrap().get(0, 1, 1), 0x29);
-        assert_ne!(d.state().unwrap().keymap_version, before);
+        assert_ne!(state_of(&mut d).keymap_version, before);
     }
 
     #[test]
@@ -434,11 +459,11 @@ mod tests {
         m.pending.push_back(p::via_request(&[0x12, 0, 0, 4]));
         m.pending.push_back(p::via_request(&[0xFE, 0x0D, 0x03]));
         let mut d = Device::new(Box::new(m), Duration::from_millis(50));
-        d.state().unwrap();
+        state_of(&mut d);
         assert_eq!(d.take_foreign(), 2);
         assert_eq!(d.take_foreign(), 0);
         // our own answers are not foreign
-        d.state().unwrap();
+        state_of(&mut d);
         d.info().unwrap();
         assert_eq!(d.take_foreign(), 0);
         // nothing sent, nothing received

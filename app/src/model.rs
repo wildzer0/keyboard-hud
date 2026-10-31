@@ -98,28 +98,26 @@ pub fn classify_layers(keymap: &Keymap, state: &HudState) -> Vec<(u8, LayerHold)
     let mask = state.active_mask();
     let top = highest_layer(mask);
     let mut held = 0u32;
-    for row in 0..keymap.rows().min(8) {
-        for col in 0..keymap.cols().min(8) {
-            if !state.is_pressed(row, col) {
-                continue;
-            }
-            let (code, _) = keymap.resolve(top, mask, row, col);
-            let target = match decode(code) {
-                Keycode::Layer {
-                    op:
-                        LayerOp::Momentary
-                        | LayerOp::TriLayerLower
-                        | LayerOp::TriLayerUpper
-                        | LayerOp::TapToggle
-                        | LayerOp::OneShot,
-                    layer,
-                } => Some(layer),
-                Keycode::LayerTap { layer, .. } | Keycode::LayerMod { layer, .. } => Some(layer),
-                _ => None,
-            };
-            if let Some(l) = target.filter(|l| *l < 32) {
-                held |= 1 << l;
-            }
+    for (row, col) in state.matrix.pressed() {
+        if row >= keymap.rows() || col >= keymap.cols() {
+            continue;
+        }
+        let (code, _) = keymap.resolve(top, mask, row, col);
+        let target = match decode(code) {
+            Keycode::Layer {
+                op:
+                    LayerOp::Momentary
+                    | LayerOp::TriLayerLower
+                    | LayerOp::TriLayerUpper
+                    | LayerOp::TapToggle
+                    | LayerOp::OneShot,
+                layer,
+            } => Some(layer),
+            Keycode::LayerTap { layer, .. } | Keycode::LayerMod { layer, .. } => Some(layer),
+            _ => None,
+        };
+        if let Some(l) = target.filter(|l| *l < 32) {
+            held |= 1 << l;
         }
     }
     let lower = 1u32 << TRI_LAYER_LOWER;
@@ -244,7 +242,7 @@ mod tests {
     fn state(layers: u32, pressed: &[(u8, u8)]) -> HudState {
         let mut s = HudState { layer_state: layers, default_layer_state: 1, ..Default::default() };
         for &(r, c) in pressed {
-            s.matrix[r as usize] |= 1 << c;
+            s.matrix.set(r, c);
         }
         s
     }

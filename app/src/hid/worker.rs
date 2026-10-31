@@ -567,7 +567,7 @@ fn session(mut conn: Connection, ctx: &Ctx, vial: &mut Option<VialWatch>, report
             }
             conn.device.take_foreign();
         }
-        let idle = last.is_none_or(|s| s.matrix == [0; 8]) && last_activity.elapsed() >= BACKUP_IDLE;
+        let idle = last.is_none_or(|s| s.matrix.is_empty()) && last_activity.elapsed() >= BACKUP_IDLE;
         if (backup_due || backup_checked.elapsed() >= BACKUP_INTERVAL) && (idle || conn.info.is_none()) {
             run_backup(&mut conn, &definition, ctx);
             conn.device.take_foreign();
@@ -583,7 +583,10 @@ fn session(mut conn: Connection, ctx: &Ctx, vial: &mut Option<VialWatch>, report
             continue;
         }
         let asked = Instant::now();
-        let result = conn.device.state();
+        let result = match &conn.info {
+            Some(info) => conn.device.state(info),
+            None => continue,
+        };
         let latency = asked.elapsed();
         let foreign = conn.device.take_foreign();
         if foreign > 0 {
@@ -597,7 +600,7 @@ fn session(mut conn: Connection, ctx: &Ctx, vial: &mut Option<VialWatch>, report
                 let keymap_changed = last.is_some_and(|l| {
                     l.keymap_version != state.keymap_version || l.flag(flags::COLEMAK) != state.flag(flags::COLEMAK)
                 });
-                if state.matrix != [0; 8] {
+                if !state.matrix.is_empty() {
                     last_activity = Instant::now();
                 }
                 backup_due |= keymap_changed;

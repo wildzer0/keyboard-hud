@@ -9,7 +9,10 @@ pub const REPORT_SIZE: usize = 32;
 pub type Report = [u8; REPORT_SIZE];
 
 pub const HUD_CMD: u8 = 0xF0;
+/// Protocol 1 for matrices up to 8×8; protocol 2 adds `GET_MATRIX` for wider ones.
 pub const HUD_PROTOCOL_VERSION: u8 = 1;
+/// Pressed keys fit in one report: 32 bytes minus the 4 of the header.
+pub const MATRIX_MAX_BYTES: usize = REPORT_SIZE - 4;
 pub const STATUS_OK: u8 = 0;
 pub const STATUS_PENDING: u8 = 0xFF;
 pub const ID_UNHANDLED: u8 = 0xFF;
@@ -49,6 +52,8 @@ pub enum HudCommand {
     Info = 0x01,
     State = 0x02,
     Keymap = 0x03,
+    /// Protocol 2: all the pressed keys, `row_bytes` per row.
+    Matrix = 0x04,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +171,15 @@ pub struct HudInfo {
     pub hud_tog_keycode: u16,
     pub keymap_chunk: u8,
     pub keymap_version: u8,
+    /// Bytes per matrix row: `ceil(cols / 8)` (1 with protocol 1).
+    pub row_bytes: u8,
+}
+
+impl HudInfo {
+    /// Wider matrices: pressed keys come from `GET_MATRIX`, not `GET_STATE`.
+    pub fn has_matrix_command(&self) -> bool {
+        self.protocol >= 2
+    }
 }
 
 pub fn decode_info(resp: &Report, seq: u8) -> Result<HudInfo, ProtocolError> {
@@ -179,12 +193,24 @@ pub fn decode_info(resp: &Report, seq: u8) -> Result<HudInfo, ProtocolError> {
         hud_tog_keycode: u16_le(resp, 10),
         keymap_chunk: resp[12],
         keymap_version: resp[13],
+        // protocol 1 does not define the byte: one per row
+        row_bytes: if resp[4] == 1 { 1 } else { resp[14] },
     };
-    if info.protocol != HUD_PROTOCOL_VERSION {
+    // a protocol newer than the ones known is read as protocol 2
+    if info.protocol == 0 {
         return Err(ProtocolError::Invalid("HUD protocol version"));
     }
-    if !(1..=8).contains(&info.rows) || !(1..=8).contains(&info.cols) {
-        // GET_STATE carries 8 rows of at most 8 columns
+    if info.protocol == 1 {
+        if !(1..=8).contains(&info.rows) || !(1..=8).contains(&info.cols) {
+            // GET_STATE carries 8 rows of at most 8 columns
+            return Err(ProtocolError::Invalid("matrix size"));
+        }
+    } else if info.rows == 0
+        || info.cols == 0
+        || (info.cols as usize).div_ceil(8) > info.row_bytes as usize
+        || info.rows as usize * info.row_bytes as usize > MATRIX_MAX_BYTES
+    {
+        // the pressed keys of GET_MATRIX must fit in one report
         return Err(ProtocolError::Invalid("matrix size"));
     }
     if !(1..=32).contains(&info.layers) {
@@ -228,13 +254,71 @@ pub enum DetectedOs {
     Ios,
 }
 
+/// Pressed keys: `row_bytes` bytes per row, bit `c % 8` of byte `c / 8` = column `c`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Matrix {
+    bytes: [u8; MATRIX_MAX_BYTES],
+    row_bytes: u8,
+}
+
+impl Default for Matrix {
+    fn default() -> Self {
+        Matrix::new(1)
+    }
+}
+
+impl Matrix {
+    pub fn new(row_bytes: u8) -> Self {
+        Matrix { bytes: [0; MATRIX_MAX_BYTES], row_bytes: row_bytes.max(1) }
+    }
+
+    fn index(&self, row: u8, col: u8) -> Option<usize> {
+        let (byte, rb) = ((col >> 3) as usize, self.row_bytes as usize);
+        (byte < rb).then(|| row as usize * rb + byte).filter(|i| *i < MATRIX_MAX_BYTES)
+    }
+
+    pub fn is_pressed(&self, row: u8, col: u8) -> bool {
+        self.index(row, col).is_some_and(|i| self.bytes[i] & (1 << (col & 7)) != 0)
+    }
+
+    #[cfg(test)]
+    pub fn set(&mut self, row: u8, col: u8) {
+        if let Some(i) = self.index(row, col) {
+            self.bytes[i] |= 1 << (col & 7);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.iter().all(|b| *b == 0)
+    }
+
+    /// `(row, col)` of every pressed key.
+    pub fn pressed(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        let rb = self.row_bytes as usize;
+        self.bytes.iter().enumerate().flat_map(move |(i, b)| {
+            (0..8u8).filter(move |bit| b & (1 << bit) != 0).map(move |bit| ((i / rb) as u8, ((i % rb) * 8) as u8 + bit))
+        })
+    }
+}
+
+/// Answer to `GET_MATRIX`: `rows × row_bytes` bytes, row by row.
+pub fn decode_matrix(resp: &Report, seq: u8, rows: u8, row_bytes: u8) -> Result<Matrix, ProtocolError> {
+    check_hud(resp, HudCommand::Matrix, seq)?;
+    let n = rows as usize * row_bytes as usize;
+    if n > MATRIX_MAX_BYTES {
+        return Err(ProtocolError::Invalid("matrix size"));
+    }
+    let mut m = Matrix::new(row_bytes);
+    m.bytes[..n].copy_from_slice(&resp[4..4 + n]);
+    Ok(m)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HudState {
     pub layer_state: u32,
     pub default_layer_state: u8,
     pub locked_layers: u8,
-    /// One byte per matrix row, bit `c` = column `c`.
-    pub matrix: [u8; 8],
+    pub matrix: Matrix,
     pub mods: u8,
     pub weak_mods: u8,
     pub oneshot_mods: u8,
@@ -250,7 +334,7 @@ pub struct HudState {
 
 impl HudState {
     pub fn is_pressed(&self, row: u8, col: u8) -> bool {
-        row < 8 && col < 8 && self.matrix[row as usize] & (1 << col) != 0
+        self.matrix.is_pressed(row, col)
     }
 
     pub fn flag(&self, f: u8) -> bool {
@@ -265,8 +349,9 @@ impl HudState {
 
 pub fn decode_state(resp: &Report, seq: u8) -> Result<HudState, ProtocolError> {
     check_hud(resp, HudCommand::State, seq)?;
-    let mut matrix = [0u8; 8];
-    matrix.copy_from_slice(&resp[10..18]);
+    // protocol 1: one byte for each of 8 rows; protocol 2 replaces it with GET_MATRIX
+    let mut matrix = Matrix::new(1);
+    matrix.bytes[..8].copy_from_slice(&resp[10..18]);
     let oneshot_layer = match resp[22] {
         0xFF => None,
         l if l < 32 => Some(l),
@@ -471,9 +556,46 @@ mod tests {
                 capabilities: 0x3F,
                 hud_tog_keycode: 0x7E12,
                 keymap_chunk: 12,
-                keymap_version: 9
+                keymap_version: 9,
+                row_bytes: 1
             }
         );
+    }
+
+    #[test]
+    fn info_protocol_2_wide_matrix() {
+        // Yunzii B68: 5 rows × 16 columns, 2 bytes per row
+        let fields = [(4, 2), (5, 5), (6, 16), (7, 8), (8, 8), (10, 0x00), (11, 0x7E), (12, 12), (13, 3), (14, 2)];
+        let info = decode_info(&response(HudCommand::Info, 5, &fields), 5).unwrap();
+        assert_eq!((info.protocol, info.rows, info.cols, info.row_bytes), (2, 5, 16, 2));
+        assert!(info.has_matrix_command());
+        // a newer protocol is read as protocol 2
+        let mut newer = fields.to_vec();
+        newer.push((4, 3));
+        assert!(decode_info(&response(HudCommand::Info, 5, &newer), 5).unwrap().has_matrix_command());
+        // too few bytes for the columns, or a matrix that does not fit in a report
+        for bad in [(14, 1), (14, 0), (5, 15)] {
+            let mut f = fields.to_vec();
+            f.push(bad);
+            assert!(decode_info(&response(HudCommand::Info, 5, &f), 5).is_err(), "{bad:?}");
+        }
+        // protocol 1 ignores the byte and stays within 8 × 8
+        let v1 = [(4, 1), (5, 8), (6, 8), (7, 6), (12, 12), (14, 7)];
+        assert_eq!(decode_info(&response(HudCommand::Info, 0, &v1), 0).unwrap().row_bytes, 1);
+    }
+
+    #[test]
+    fn matrix_round_trip() {
+        // the example of the protocol: Q (1, 1) and (2, 11)
+        let r = response(HudCommand::Matrix, 6, &[(6, 0x02), (9, 0x08)]);
+        let m = decode_matrix(&r, 6, 5, 2).unwrap();
+        assert_eq!(m.pressed().collect::<Vec<_>>(), vec![(1, 1), (2, 11)]);
+        assert!(m.is_pressed(1, 1) && m.is_pressed(2, 11));
+        assert!(!m.is_pressed(1, 9) && !m.is_pressed(2, 3) && !m.is_pressed(0, 16) && !m.is_pressed(9, 0));
+        assert!(!m.is_empty());
+        assert!(decode_matrix(&response(HudCommand::Matrix, 6, &[]), 6, 5, 2).unwrap().is_empty());
+        assert_eq!(decode_matrix(&r, 7, 5, 2), Err(ProtocolError::Mismatch));
+        assert!(decode_matrix(&r, 6, 15, 2).is_err());
     }
 
     #[test]
